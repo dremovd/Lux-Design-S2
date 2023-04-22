@@ -217,11 +217,6 @@ def evaluate(args, env_id, model):
 
 
 def train(args, env_id, model: PPO):
-    try:
-        model = model.load(args.model_path)
-    except:
-        pass
-    
     eval_env = SubprocVecEnv(
         [make_env(env_id, i, max_episode_steps=1000) for i in range(4)]
     )
@@ -258,7 +253,7 @@ def main(args):
     )
     env.reset()
     rollout_steps = 4000
-    policy_kwargs = dict(net_arch=(128, 128, 128, 128, 128, 128))
+    policy_kwargs = dict(net_arch=(128, 128))
     model = PPO(
         "MlpPolicy",
         env,
