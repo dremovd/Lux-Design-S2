@@ -40,37 +40,51 @@ class Agent:
         if obs["teams"][self.player]["metal"] == 0:
             return dict()
         potential_spawns = list(zip(*np.where(obs["board"]["valid_spawns_mask"] == 1)))
-        potential_spawns_set = set(potential_spawns)
-        done_search = False
-
-        ice_diff = np.diff(obs["board"]["ice"])
-        pot_ice_spots = np.argwhere(ice_diff == 1)
-        if len(pot_ice_spots) == 0:
-            pot_ice_spots = potential_spawns
-        trials = 5
-        while trials > 0:
-            pos_idx = np.random.randint(0, len(pot_ice_spots))
-            pos = pot_ice_spots[pos_idx]
-
-            area = 3
-            for x in range(area):
-                for y in range(area):
-                    check_pos = [pos[0] + x - area // 2, pos[1] + y - area // 2]
-                    if tuple(check_pos) in potential_spawns_set:
-                        done_search = True
-                        pos = check_pos
-                        break
-                if done_search:
-                    break
-            if done_search:
-                break
-            trials -= 1
-        spawn_loc = potential_spawns[np.random.randint(0, len(potential_spawns))]
-        if not done_search:
-            pos = spawn_loc
-
+        
+        water_mask = [
+            (-2, -1),
+            (-2, 0),
+            (-2, 1),
+            (2, -1),
+            (2, 0),
+            (2, 1),
+            (-1, -2),
+            (0, -2),
+            (1, -2),
+            (-1, 2),
+            (0, 2),
+            (1, 2),
+        ]
+        lichen_mask = water_mask
+        
+        options = []
+        for spawn_position in potential_spawns:
+            count_ice = 0
+            count_rubble_free = 0
+            # left_x, top_y = spawn_position
+            center_x, center_y = spawn_position # left_x + 1, top_y + 1
+            for dx, dy in water_mask:
+                x = center_x + dx
+                y = center_y + dy
+                if 0 < x < obs["board"]["ice"].shape[0] and 0 < y < obs["board"]["ice"].shape[1]: 
+                    count_ice += obs["board"]["ice"][x, y]
+            
+            for dx, dy in lichen_mask:
+                x = center_x + dx
+                y = center_y + dy
+                if 0 < x < obs["board"]["rubble"].shape[0] and 0 < y < obs["board"]["rubble"].shape[1]: 
+                    count_rubble_free += obs["board"]["rubble"][x, y] == 0
+            score = (count_ice > 0, count_rubble_free)
+            options.append((score, spawn_position))
+            
+        options = sorted(options, key=lambda x: x[0], reverse=True)
+        for count_ice, pos in options[:5]:
+            print(count_ice, pos, file=sys.stderr)
+            
+        _, pos = options[0]
         metal = obs["teams"][self.player]["metal"]
-        return dict(spawn=pos, metal=metal, water=metal)
+        water = obs["teams"][self.player]["water"]
+        return dict(spawn=pos, metal=metal, water=water)
 
     def act(self, step: int, obs, remainingOverageTime: int = 60):
         # first convert observations using the same observation wrapper you used for training
@@ -104,12 +118,11 @@ class Agent:
             self.player, raw_obs, actions[0]
         )
 
-        # commented code below adds watering lichen which can easily improve your agent
-        # shared_obs = raw_obs[self.player]
-        # factories = shared_obs["factories"][self.player]
-        # for unit_id in factories.keys():
-        #     factory = factories[unit_id]
-        #     if 1000 - step < 50 and factory["cargo"]["water"] > 100:
-        #         lux_action[unit_id] = 2 # water and grow lichen at the very end of the game
+        shared_obs = raw_obs[self.player]
+        factories = shared_obs["factories"][self.player]
+        for unit_id in factories.keys():
+            factory = factories[unit_id]
+            if 1000 - step < 50 and factory["cargo"]["water"] > 100:
+                lux_action[unit_id] = 2 # water and grow lichen at the very end of the game
 
         return lux_action

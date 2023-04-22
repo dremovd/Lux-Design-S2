@@ -29,6 +29,7 @@ from stable_baselines3.common.vec_env import (
     VecVideoRecorder,
 )
 from stable_baselines3.ppo import PPO
+import random
 
 from wrappers import SimpleUnitDiscreteController, SimpleUnitObservationWrapper
 
@@ -112,13 +113,13 @@ def parse_args():
     parser.add_argument(
         "--max-episode-steps",
         type=int,
-        default=200,
+        default=1000,
         help="Max steps per episode before truncating them",
     )
     parser.add_argument(
         "--total-timesteps",
         type=int,
-        default=3_000_000,
+        default=15_000_000,
         help="Total timesteps for training",
     )
 
@@ -141,13 +142,14 @@ def parse_args():
     return args
 
 
+
 def make_env(env_id: str, rank: int, seed: int = 0, max_episode_steps=100):
     def _init() -> gym.Env:
         # verbose = 0
         # collect stats so we can create reward functions
         # max factories set to 2 for simplification and keeping returns consistent as we survive longer if there are more initial resources
-        env = gym.make(env_id, verbose=0, collect_stats=True, MAX_FACTORIES=2)
-
+        env = gym.make(env_id, verbose=0, collect_stats=True, MAX_FACTORIES = random.randint(2, 5))
+        
         # Add a SB3 wrapper to make it work with SB3 and simplify the action space with the controller
         # this will remove the bidding phase and factory placement phase. For factory placement we use
         # the provided place_near_random_ice function which will randomly select an ice tile and place a factory near it.
@@ -215,6 +217,11 @@ def evaluate(args, env_id, model):
 
 
 def train(args, env_id, model: PPO):
+    try:
+        model = model.load(args.model_path)
+    except:
+        pass
+    
     eval_env = SubprocVecEnv(
         [make_env(env_id, i, max_episode_steps=1000) for i in range(4)]
     )
@@ -225,12 +232,15 @@ def train(args, env_id, model: PPO):
         eval_freq=24_000,
         deterministic=False,
         render=False,
-        n_eval_episodes=5,
+        n_eval_episodes=60,
     )
 
     model.learn(
         args.total_timesteps,
-        callback=[TensorboardCallback(tag="train_metrics"), eval_callback],
+        callback=[
+            TensorboardCallback(tag="train_metrics"), 
+            eval_callback
+        ],
     )
     model.save(osp.join(args.log_path, "models/latest_model"))
 
@@ -248,7 +258,7 @@ def main(args):
     )
     env.reset()
     rollout_steps = 4000
-    policy_kwargs = dict(net_arch=(128, 128))
+    policy_kwargs = dict(net_arch=(128, 128, 128, 128, 128, 128))
     model = PPO(
         "MlpPolicy",
         env,
