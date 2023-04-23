@@ -13,7 +13,7 @@ import torch.nn as nn
 from gym import spaces
 from gym.wrappers import TimeLimit
 from luxai_s2.state import ObservationStateDict, StatsStateDict
-from luxai_s2.utils.heuristics.factory_placement import place_near_random_ice
+# from luxai_s2.utils.heuristics.factory_placement import place_near_random_ice
 from luxai_s2.wrappers import SB3Wrapper
 from stable_baselines3.common.callbacks import (
     BaseCallback,
@@ -34,6 +34,55 @@ import random
 from wrappers import SimpleUnitDiscreteController, SimpleUnitObservationWrapper
 
 
+def factory_placement_policy(player, obs: ObservationStateDict):
+    if obs["teams"][player]["metal"] == 0:
+        return dict()
+
+    potential_spawns = list(zip(*np.where(obs["board"]["valid_spawns_mask"] == 1)))
+
+    water_mask = [
+        (-2, -1),
+        (-2, 0),
+        (-2, 1),
+        (2, -1),
+        (2, 0),
+        (2, 1),
+        (-1, -2),
+        (0, -2),
+        (1, -2),
+        (-1, 2),
+        (0, 2),
+        (1, 2),
+    ]
+    lichen_mask = water_mask
+
+    options = []
+    for spawn_position in potential_spawns:
+        count_ice = 0
+        count_rubble_free = 0
+        # left_x, top_y = spawn_position
+        center_x, center_y = spawn_position # left_x + 1, top_y + 1
+        for dx, dy in water_mask:
+            x = center_x + dx
+            y = center_y + dy
+            if 0 < x < obs["board"]["ice"].shape[0] and 0 < y < obs["board"]["ice"].shape[1]: 
+                count_ice += obs["board"]["ice"][x, y]
+
+        for dx, dy in lichen_mask:
+            x = center_x + dx
+            y = center_y + dy
+            if 0 < x < obs["board"]["rubble"].shape[0] and 0 < y < obs["board"]["rubble"].shape[1]: 
+                count_rubble_free += obs["board"]["rubble"][x, y] == 0
+        score = (count_ice > 0, count_rubble_free)
+        options.append((score, spawn_position))
+
+    options = sorted(options, key=lambda x: x[0], reverse=True)
+
+    _, pos = options[0]
+    metal = obs["teams"][player]["metal"]
+    water = obs["teams"][player]["water"]
+    return dict(spawn=pos, metal=metal, water=water)
+
 class CustomEnvWrapper(gym.Wrapper):
     def __init__(self, env: gym.Env) -> None:
         """
@@ -41,6 +90,9 @@ class CustomEnvWrapper(gym.Wrapper):
         """
         super().__init__(env)
         self.prev_step_metrics = None
+
+    def step_delta(self, metrics, key):
+        return metrics[key] - self.prev_step_metrics[key]
 
     def step(self, action):
         agent = "player_0"
@@ -65,9 +117,11 @@ class CustomEnvWrapper(gym.Wrapper):
         info = dict()
         metrics = dict()
         metrics["ice_dug"] = (
-            stats["generation"]["ice"]["HEAVY"] + stats["generation"]["ice"]["LIGHT"]
+            stats["generation"]["ice"]["HEAVY"] 
+            + stats["generation"]["ice"]["LIGHT"]
         )
         metrics["water_produced"] = stats["generation"]["water"]
+        metrics["lichen"] = stats["generation"]["lichen"]
 
         # we save these two to see often the agent updates robot action queues and how often enough
         # power to do so and succeed (less frequent updates = more power is saved)
@@ -78,14 +132,19 @@ class CustomEnvWrapper(gym.Wrapper):
         info["metrics"] = metrics
 
         reward = 0
+        
         if self.prev_step_metrics is not None:
             # we check how much ice and water is produced and reward the agent for generating both
-            ice_dug_this_step = metrics["ice_dug"] - self.prev_step_metrics["ice_dug"]
-            water_produced_this_step = (
-                metrics["water_produced"] - self.prev_step_metrics["water_produced"]
-            )
+            ice_dug_this_step = self.step_delta(metrics, 'ice_dug')
+            water_produced_this_step = self.step_delta(metrics, 'water_produced')
             # we reward water production more as it is the most important resource for survival
-            reward = ice_dug_this_step / 100 + water_produced_this_step
+            reward = (
+                0.1 * self.step_delta(metrics, 'ice_dug')
+                + self.step_delta(metrics, 'water_produced') 
+                - 0.01 * self.step_delta(metrics, 'action_queue_updates_total')
+                + 0.015 * self.step_delta(metrics, 'action_queue_updates_success')
+                + 10 * metrics["lichen"]
+            )
 
         self.prev_step_metrics = copy.deepcopy(metrics)
         return obs, reward, done, info
@@ -119,7 +178,7 @@ def parse_args():
     parser.add_argument(
         "--total-timesteps",
         type=int,
-        default=15_000_000,
+        default=100_000_000,
         help="Total timesteps for training",
     )
 
@@ -148,7 +207,7 @@ def make_env(env_id: str, rank: int, seed: int = 0, max_episode_steps=100):
         # verbose = 0
         # collect stats so we can create reward functions
         # max factories set to 2 for simplification and keeping returns consistent as we survive longer if there are more initial resources
-        env = gym.make(env_id, verbose=0, collect_stats=True, MAX_FACTORIES = random.randint(2, 5))
+        env = gym.make(env_id, verbose=0, collect_stats=True, MAX_FACTORIES = 2)
         
         # Add a SB3 wrapper to make it work with SB3 and simplify the action space with the controller
         # this will remove the bidding phase and factory placement phase. For factory placement we use
@@ -156,7 +215,7 @@ def make_env(env_id: str, rank: int, seed: int = 0, max_episode_steps=100):
 
         env = SB3Wrapper(
             env,
-            factory_placement_policy=place_near_random_ice,
+            factory_placement_policy=factory_placement_policy,
             controller=SimpleUnitDiscreteController(env.env_cfg),
         )
         env = SimpleUnitObservationWrapper(
@@ -258,7 +317,7 @@ def main(args):
         "MlpPolicy",
         env,
         n_steps=rollout_steps // args.n_envs,
-        batch_size=800,
+        batch_size=2700,
         learning_rate=3e-4,
         policy_kwargs=policy_kwargs,
         verbose=1,
